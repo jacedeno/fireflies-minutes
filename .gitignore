@@ -39,3 +39,8 @@ Thumbs.db
 .claude/
 .claude.local
 claude-session.json
+
+# Cloudflare Worker
+worker/.wrangler/
+worker/.dev.vars
+worker/dist/

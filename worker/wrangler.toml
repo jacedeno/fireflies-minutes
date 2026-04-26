@@ -1,0 +1,14 @@
+name = "fireflies-webhook"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+# After running:
+#   npx wrangler kv namespace create fireflies-queue
+# paste the returned id below.
+[[kv_namespaces]]
+binding = "QUEUE"
+id = ""
+
+# Secrets are set via `wrangler secret put` and never committed:
+#   FIREFLIES_WEBHOOK_SECRET
+#   WORKER_ADMIN_TOKEN
