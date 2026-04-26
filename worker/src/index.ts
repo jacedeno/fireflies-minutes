@@ -28,6 +28,7 @@ export default {
 async function handleWebhook(req: Request, env: Env): Promise<Response> {
   const body = await req.text();
   const signature =
+    req.headers.get("x-hub-signature") ??
     req.headers.get("x-hub-signature-256") ??
     req.headers.get("x-fireflies-signature");
 
@@ -49,11 +50,6 @@ async function handleWebhook(req: Request, env: Env): Promise<Response> {
   const meetingId = pickMeetingId(payload);
   if (!meetingId) {
     return new Response("missing meetingId", { status: 400 });
-  }
-
-  const eventType = payload.eventType ?? payload.event_type;
-  if (eventType && eventType !== "Transcription completed") {
-    return new Response("ignored", { status: 200 });
   }
 
   const entry = JSON.stringify({

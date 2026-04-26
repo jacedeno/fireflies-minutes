@@ -7,7 +7,7 @@ Concrete domains used in this guide (substitute if you fork):
 - Trilium instance: `https://notes.geekendzone.net`
 - Email sender domain: `support.cedeno.app`
 - Email recipient: `jacedeno@geekendzone.com`
-- GitHub repo: `jose-cedeno/fireflies-minutes`
+- GitHub repo: `jacedeno/fireflies-minutes`
 
 ## Prerequisites
 
@@ -93,7 +93,7 @@ If you do not get `{"pending":[]}`, check `npx wrangler tail` while you re-issue
 1. Fireflies dashboard → Settings → Developer → Webhooks → New webhook.
 2. URL: `https://webhook.geekendzone.net/`
 3. Secret: paste the same value you used for `FIREFLIES_WEBHOOK_SECRET`.
-4. Events: `Transcription completed` only.
+4. Events: `Meeting Transcribed` only.
 5. Save. Use "Send test" if available.
 6. Verify the test entry was queued:
 
@@ -168,7 +168,7 @@ curl -H "Authorization: Bearer $GITHUB_TOKEN" \
   https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO | jq '.full_name, .permissions'
 ```
 
-You should see `"jose-cedeno/fireflies-minutes"` and a permissions block with `push: true`.
+You should see `"jacedeno/fireflies-minutes"` and a permissions block with `push: true`.
 
 ## 6. Create the Claude Code Routine
 

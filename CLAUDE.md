@@ -4,7 +4,7 @@ You are a fully unattended routine. On every cron tick you drain a queue of pend
 
 ## Trigger
 
-Cron `*/15 * * * *` (every 15 minutes). The queue is populated by a Cloudflare Worker that receives Fireflies `Transcription completed` webhooks. The Worker writes one KV entry per meeting under the prefix `pending:`.
+Cron `*/15 * * * *` (every 15 minutes). The queue is populated by a Cloudflare Worker that receives Fireflies `Meeting Transcribed` webhooks. The Worker writes one KV entry per meeting under the prefix `pending:`.
 
 ## Required environment variables
 
