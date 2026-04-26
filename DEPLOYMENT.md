@@ -1,132 +1,178 @@
 # Deployment Guide
 
-End-to-end deploy of the Fireflies meeting minutes routine. Estimated time: 30–45 minutes if all accounts are already created.
+End-to-end deploy of the Fireflies meeting minutes routine.
+
+Concrete domains used in this guide (substitute if you fork):
+- Webhook receiver: `https://webhook.geekendzone.net`
+- Trilium instance: `https://notes.geekendzone.net`
+- Email sender domain: `support.cedeno.app`
+- Email recipient: `jacedeno@geekendzone.com`
+- GitHub repo: `jose-cedeno/fireflies-minutes`
 
 ## Prerequisites
 
-- Fireflies account with an API key and webhook permissions.
-- Cloudflare account, with `geekendzone.com` (or your domain) added.
-- A `wrangler` CLI logged in (`npx wrangler login`).
-- A GitHub repo named `fireflies-minutes` (this one).
-- A self-hosted Trilium instance reachable on HTTPS, with ETAPI enabled.
-- A Resend account with `geekendzone.com` (or your sending domain) verified.
+- Fireflies account with API key + webhook permissions.
+- Cloudflare account with `geekendzone.net` already added as a zone (so the custom domain in `worker/wrangler.toml` resolves).
+- Node 18+ on this machine (only needed once, to run `wrangler`).
+- A self-hosted Trilium instance reachable at `https://notes.geekendzone.net` with ETAPI enabled.
+- Resend account with `support.cedeno.app` verified.
 - Claude Code installed and signed in on a Pro/Max/Team/Enterprise plan.
 
-## 1. Deploy the Cloudflare Worker
+## 1. Cloudflare Worker — step by step
+
+### 1.1 Install wrangler and log in
 
 ```bash
-cd worker
+cd /home/geekendzone/repos/fireflies-minutes/worker
 npm install
-npx wrangler kv namespace create fireflies-queue
-# Copy the returned `id` and paste it into wrangler.toml under [[kv_namespaces]] id = "..."
+npx wrangler login
+```
 
+The login opens a browser — authorize the account that owns `geekendzone.net`.
+
+### 1.2 Create the KV namespace
+
+```bash
+npx wrangler kv namespace create fireflies-queue
+```
+
+The output looks like:
+
+```
+🌀  Creating namespace with title "fireflies-webhook-fireflies-queue"
+✨  Success!
+Add the following to your configuration file in your kv_namespaces array:
+[[kv_namespaces]]
+binding = "QUEUE"
+id = "abcd1234ef5678..."
+```
+
+Copy the `id` and paste it into `worker/wrangler.toml`, replacing the empty `id = ""` under `[[kv_namespaces]]`.
+
+### 1.3 Generate the two shared secrets
+
+Generate them once on this machine, then upload to the Worker. You will reuse the same values when configuring the Fireflies webhook (for `FIREFLIES_WEBHOOK_SECRET`) and the Claude routine (for `WORKER_ADMIN_TOKEN`).
+
+```bash
+openssl rand -hex 32   # → use as FIREFLIES_WEBHOOK_SECRET
+openssl rand -hex 32   # → use as WORKER_ADMIN_TOKEN
+```
+
+Save both values into `.env` on this machine (under the `TODO:` lines I left for you), and then push them to the Worker:
+
+```bash
 npx wrangler secret put FIREFLIES_WEBHOOK_SECRET
-# paste the secret you will also configure in Fireflies
+# paste the first 64-char hex string when prompted
 
 npx wrangler secret put WORKER_ADMIN_TOKEN
-# generate a random 32-char token; you will reuse it in the routine
+# paste the second 64-char hex string when prompted
+```
 
+### 1.4 Deploy
+
+```bash
 npx wrangler deploy
 ```
 
-Note the deployed URL (e.g. `https://fireflies-webhook.<your-subdomain>.workers.dev`). You can attach a custom domain in the Cloudflare dashboard → Workers → your Worker → Triggers → Custom Domains. Recommended: `webhook.geekendzone.com`.
+The output shows the deploy URL plus a line like `Custom domain webhook.geekendzone.net attached`. If the custom domain step fails, the zone `geekendzone.net` is not on this Cloudflare account — fix the zone, then re-run `npx wrangler deploy`.
 
-Smoke test:
+### 1.5 Smoke test the Worker
 
 ```bash
-curl -H "Authorization: Bearer $WORKER_ADMIN_TOKEN" \
-  https://webhook.geekendzone.com/queue
-# expect: {"pending":[]}
+TOKEN="<paste WORKER_ADMIN_TOKEN>"
+
+# Empty queue, expected response: {"pending":[]}
+curl -H "Authorization: Bearer $TOKEN" \
+  https://webhook.geekendzone.net/queue
 ```
+
+If you do not get `{"pending":[]}`, check `npx wrangler tail` while you re-issue the curl — the live log shows the Worker request.
 
 ## 2. Configure the Fireflies webhook
 
-1. Fireflies dashboard → Settings → Developer → Webhooks.
-2. URL: `https://webhook.geekendzone.com/`
-3. Secret: paste the same value you stored as `FIREFLIES_WEBHOOK_SECRET`.
+1. Fireflies dashboard → Settings → Developer → Webhooks → New webhook.
+2. URL: `https://webhook.geekendzone.net/`
+3. Secret: paste the same value you used for `FIREFLIES_WEBHOOK_SECRET`.
 4. Events: `Transcription completed` only.
-5. Save.
-
-Trigger the dashboard's "Send test" if available. Then:
+5. Save. Use "Send test" if available.
+6. Verify the test entry was queued:
 
 ```bash
-curl -H "Authorization: Bearer $WORKER_ADMIN_TOKEN" \
-  https://webhook.geekendzone.com/queue
-# expect: {"pending":[{"id":"<test_meeting_id>","receivedAt":"..."}]}
+curl -H "Authorization: Bearer $TOKEN" \
+  https://webhook.geekendzone.net/queue
+# → {"pending":[{"id":"<test_meeting_id>","receivedAt":"..."}]}
 ```
 
-Clean up the test entry:
+7. Clean up:
 
 ```bash
-curl -X DELETE -H "Authorization: Bearer $WORKER_ADMIN_TOKEN" \
-  https://webhook.geekendzone.com/queue/<test_meeting_id>
+curl -X DELETE -H "Authorization: Bearer $TOKEN" \
+  https://webhook.geekendzone.net/queue/<test_meeting_id>
 ```
 
 ## 3. Verify Resend sender
 
-1. Resend → Domains → Add Domain → `geekendzone.com`.
-2. Add the SPF / DKIM / DMARC DNS records to Cloudflare DNS. Wait for verification (usually <10 minutes).
-3. Resend → API Keys → create a key with "Sending access" scope.
-4. Pick a from-address on the verified domain, e.g. `minutes@geekendzone.com`.
-
-Smoke test:
+Already done in your case — `support.cedeno.app` is verified and `RESEND_API_KEY` is in `.env`. Confirm with one test send:
 
 ```bash
+source .env
 curl -X POST https://api.resend.com/emails \
   -H "Authorization: Bearer $RESEND_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "from": "minutes@geekendzone.com",
+    "from": "reports@support.cedeno.app",
     "to": ["jacedeno@geekendzone.com"],
     "subject": "Resend smoke test",
     "html": "<p>It works.</p>"
   }'
 ```
 
-## 4. Trilium ETAPI
+If you see a `403 The domain is not verified`, finish the SPF/DKIM/DMARC records in the Resend dashboard before continuing.
 
-1. Trilium → Options → ETAPI → Create new ETAPI token. Copy it.
-2. Pick (or create) the parent note where meeting minutes will live, e.g. `Meetings → Maintenance`. Open the note, copy its `noteId` from the URL or the note properties dialog.
+## 4. Trilium — get the parent note id
 
-Smoke test:
+You already have the ETAPI token. You still need the `noteId` of the parent note where meeting minutes will live (e.g. `Meetings → Maintenance`).
+
+In Trilium UI: open the parent note → click the note title → "Note Info" (or `Ctrl+I`) → copy `Note ID`.
+
+Paste it into `.env` as `TRILIUM_PARENT_NOTE_ID`.
+
+Smoke test the ETAPI:
 
 ```bash
+source .env
 curl -H "Authorization: $TRILIUM_ETAPI_TOKEN" \
-  https://trilium.geekendzone.com/etapi/app-info
-# expect: JSON with appVersion, dbVersion, etc.
+  $TRILIUM_BASE_URL/etapi/app-info
 ```
 
-Create + delete a throwaway note to confirm write access:
+Then create + delete a throwaway note to confirm write permissions on the parent:
 
 ```bash
-NOTE_ID=$(curl -s -X POST https://trilium.geekendzone.com/etapi/create-note \
+NOTE_ID=$(curl -s -X POST $TRILIUM_BASE_URL/etapi/create-note \
   -H "Authorization: $TRILIUM_ETAPI_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"parentNoteId\":\"$TRILIUM_PARENT_NOTE_ID\",\"title\":\"smoke test\",\"type\":\"text\",\"content\":\"<p>ok</p>\"}" \
   | jq -r '.note.noteId')
 
 curl -X DELETE -H "Authorization: $TRILIUM_ETAPI_TOKEN" \
-  https://trilium.geekendzone.com/etapi/notes/$NOTE_ID
+  $TRILIUM_BASE_URL/etapi/notes/$NOTE_ID
 ```
 
 ## 5. GitHub PAT
 
-1. GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens.
-2. Repository access: only `fireflies-minutes`.
-3. Permissions: Contents → Read and write.
-4. Generate, copy.
-
-Smoke test:
+Already in `.env` (`GITHUB_TOKEN`). Sanity check it has access to the repo:
 
 ```bash
+source .env
 curl -H "Authorization: Bearer $GITHUB_TOKEN" \
-  https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO
-# expect: JSON describing the repo
+  https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO | jq '.full_name, .permissions'
 ```
+
+You should see `"jose-cedeno/fireflies-minutes"` and a permissions block with `push: true`.
 
 ## 6. Create the Claude Code Routine
 
-In Claude Code:
+In Claude Code on this machine:
 
 ```
 /schedule
@@ -134,22 +180,33 @@ In Claude Code:
 
 Configure:
 - Name: `fireflies-meeting-minutes`
-- Repository: `fireflies-minutes` (this repo)
 - Cron: `*/15 * * * *`
 - Prompt: paste the entire contents of `CLAUDE.md`.
-- Secrets: add every variable from the table in `README.md` under "Environment variables" (the routine ones — Worker secrets stay in the Worker).
+- Secrets to add (copy each from `.env`):
+  - `FIREFLIES_API_KEY`
+  - `WORKER_BASE_URL`
+  - `WORKER_ADMIN_TOKEN`
+  - `RESEND_API_KEY`
+  - `RESEND_FROM_EMAIL`
+  - `MEETING_RECIPIENT_EMAIL`
+  - `GITHUB_TOKEN`
+  - `GITHUB_OWNER`
+  - `GITHUB_REPO`
+  - `TRILIUM_BASE_URL`
+  - `TRILIUM_ETAPI_TOKEN`
+  - `TRILIUM_PARENT_NOTE_ID`
 
-Run it once manually from the routine UI to confirm a clean tick logs `queue empty, nothing to do`.
+Run the routine once manually from the routine UI. Expected log line on an empty queue: `queue empty, nothing to do`.
 
 ## 7. End-to-end verification
 
 1. Hold a 2-minute test meeting on Zoom with the Fireflies bot.
-2. Watch Fireflies until the transcript is ready.
+2. Wait for Fireflies to finish transcribing.
 3. Within ~15 minutes confirm:
-   - `git log` on this repo shows a new minutes commit.
-   - Trilium shows a new child note under `TRILIUM_PARENT_NOTE_ID`.
+   - `git pull` on this repo shows a new minutes commit under `minutes/YYYY/MM/`.
+   - Trilium shows a new child note under your parent note.
    - `jacedeno@geekendzone.com` received the HTML email.
-4. `curl /queue` returns `{"pending":[]}`.
+4. Re-check `GET /queue` returns `{"pending":[]}`.
 
 ## Rotation and maintenance
 

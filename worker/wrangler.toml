@@ -2,6 +2,12 @@ name = "fireflies-webhook"
 main = "src/index.ts"
 compatibility_date = "2026-01-01"
 
+# Custom domain. Requires the zone `geekendzone.net` to exist on the same
+# Cloudflare account as the Worker.
+routes = [
+  { pattern = "webhook.geekendzone.net", custom_domain = true }
+]
+
 # After running:
 #   npx wrangler kv namespace create fireflies-queue
 # paste the returned id below.

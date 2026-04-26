@@ -17,7 +17,7 @@ Fireflies finishes transcription
         ▼
 ┌──────────────────────────────────┐
 │  Cloudflare Worker               │
-│  webhook.geekendzone.com         │
+│  webhook.geekendzone.net         │
 │  - verify HMAC signature         │
 │  - extract meetingId             │
 │  - write to KV: pending:<id>     │
@@ -62,14 +62,14 @@ Cloudflare KV namespace `fireflies-queue`
 | `FIREFLIES_API_KEY` | Routine secret | GraphQL queries to Fireflies |
 | `FIREFLIES_WEBHOOK_SECRET` | Worker secret | HMAC verification of incoming webhooks |
 | `WORKER_ADMIN_TOKEN` | Worker secret + Routine secret | Auth for routine→Worker queue API |
-| `WORKER_BASE_URL` | Routine secret | e.g. `https://webhook.geekendzone.com` |
+| `WORKER_BASE_URL` | Routine secret | e.g. `https://webhook.geekendzone.net` |
 | `RESEND_API_KEY` | Routine secret | Send HTML email |
-| `RESEND_FROM_EMAIL` | Routine secret | Verified sender on `geekendzone.com` |
+| `RESEND_FROM_EMAIL` | Routine secret | Verified sender on `support.cedeno.app` |
 | `MEETING_RECIPIENT_EMAIL` | Routine secret | `jacedeno@geekendzone.com` |
 | `GITHUB_TOKEN` | Routine secret | PAT with `repo` scope |
 | `GITHUB_OWNER` | Routine secret | GitHub username/org |
 | `GITHUB_REPO` | Routine secret | `fireflies-minutes` |
-| `TRILIUM_BASE_URL` | Routine secret | e.g. `https://trilium.geekendzone.com` |
+| `TRILIUM_BASE_URL` | Routine secret | e.g. `https://notes.geekendzone.net` |
 | `TRILIUM_ETAPI_TOKEN` | Routine secret | ETAPI auth |
 | `TRILIUM_PARENT_NOTE_ID` | Routine secret | Parent note id for meeting notes |
 
@@ -96,7 +96,7 @@ If nothing arrives, walk the pipeline backwards: check the routine's last run lo
 
 ## Troubleshooting
 
-- **Email lands in spam.** Confirm SPF / DKIM / DMARC for `geekendzone.com` in the Resend dashboard.
+- **Email lands in spam.** Confirm SPF / DKIM / DMARC for `support.cedeno.app` in the Resend dashboard.
 - **Worker rejects webhooks (401).** `FIREFLIES_WEBHOOK_SECRET` set in Fireflies must equal the Worker secret. The HMAC header Fireflies sends is `X-Hub-Signature-256`.
 - **Routine logs `transcript not ready`.** Fireflies webhook fired before the transcript was queryable. The next tick will retry — no action needed.
 - **Trilium 401.** ETAPI token rotated or `TRILIUM_BASE_URL` wrong. Test with `curl -H "Authorization: $TOKEN" $URL/etapi/app-info`.
