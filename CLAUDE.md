@@ -1,29 +1,26 @@
 # Fireflies Meeting Minutes Routine
 
-You are a fully unattended routine. On every cron tick you drain a queue of pending meetings, generate structured minutes, and fan out the result to GitHub, Trilium, and email.
+You are a fully unattended routine. When triggered by a Fireflies webhook (via the proxy Worker), you receive a single meetingId, fetch its transcript, generate structured minutes, and fan out the result to GitHub, Trilium, and email.
 
 ## Trigger
 
-Cron `*/15 * * * *` (every 15 minutes). The queue is populated by a Cloudflare Worker that receives Fireflies `Meeting Transcribed` webhooks. The Worker writes one KV entry per meeting under the prefix `pending:`.
+Event-driven via Claude Code Remote Trigger. A Cloudflare Worker at `webhook.geekendzone.net` receives Fireflies `Meeting Transcribed` webhooks, verifies the HMAC signature, extracts the meetingId, and fires this routine with the meetingId as the trigger text. Each invocation processes exactly one meeting.
 
 ## Required environment variables
 
 ```
-WORKER_BASE_URL              https://webhook.geekendzone.com
-WORKER_ADMIN_TOKEN           shared secret used to call the Worker queue API
-
 FIREFLIES_API_KEY            bearer token for api.fireflies.ai/graphql
 
 GITHUB_TOKEN                 PAT with repo scope
 GITHUB_OWNER                 GitHub username/org
 GITHUB_REPO                  fireflies-minutes
 
-TRILIUM_BASE_URL             https://trilium.geekendzone.com
+TRILIUM_BASE_URL             https://notes.geekendzone.net
 TRILIUM_ETAPI_TOKEN          ETAPI token
 TRILIUM_PARENT_NOTE_ID       parent note id under which meeting notes are created
 
 RESEND_API_KEY               Resend API key
-RESEND_FROM_EMAIL            verified sender (e.g. minutes@geekendzone.com)
+RESEND_FROM_EMAIL            verified sender (e.g. reports@support.cedeno.app)
 MEETING_RECIPIENT_EMAIL      jacedeno@geekendzone.com
 ```
 
@@ -31,18 +28,11 @@ If any required variable is missing, log the missing name and exit non-zero. Nev
 
 ## Steps
 
-### 1. Drain the queue
+### 1. Extract the meetingId
 
-```
-GET ${WORKER_BASE_URL}/queue
-Authorization: Bearer ${WORKER_ADMIN_TOKEN}
-```
+The trigger payload is a plain string containing the Fireflies meetingId. Read it from the trigger text. If the text is empty or missing, log `no meetingId in trigger payload` and exit 0.
 
-Response is `{ "pending": [{ "id": "<meetingId>", "receivedAt": "<iso>" }, ...] }`. If `pending` is empty, log `queue empty, nothing to do` and exit 0.
-
-### 2. For each pending meeting
-
-Process one meeting at a time. A failure on one meeting must not block the others; leave its KV entry in place so the next tick retries, and continue with the next id.
+### 2. Process the meeting
 
 #### 2a. Fetch the transcript
 
@@ -57,7 +47,7 @@ Content-Type: application/json
 }
 ```
 
-If the transcript is not yet available (404 or null `transcript`), leave the KV entry and continue.
+If the transcript is not yet available (404 or null `transcript`), retry up to 3 times with a 20-second delay between attempts. If still unavailable after 3 retries, log `transcript not ready after retries, meetingId=<id>` and exit 0. To retry later, re-deliver the webhook from the Fireflies dashboard.
 
 #### 2b. Generate structured minutes
 
@@ -151,7 +141,7 @@ Content-Type: application/json
 }
 ```
 
-Setting `noteId` makes the call idempotent — re-runs update the same note. If the response is 4xx, log the body and skip Trilium for this meeting (but continue to email and queue cleanup).
+Setting `noteId` makes the call idempotent — re-runs update the same note. If the response is 4xx, log the body and skip Trilium for this meeting (but continue to email).
 
 #### 2g. Send email via Resend
 
@@ -169,34 +159,24 @@ Content-Type: application/json
 }
 ```
 
-#### 2h. Mark done
+### 3. Log result
 
-After GitHub + Trilium + Resend all succeed (Trilium failure is tolerable; GitHub and Resend failures are not):
-
-```
-DELETE ${WORKER_BASE_URL}/queue/<meetingId>
-Authorization: Bearer ${WORKER_ADMIN_TOKEN}
-```
-
-### 3. Log a per-tick summary
-
-End with a one-line summary: `processed=N skipped=M failed=K`.
+End with: `processed=1 meetingId=<id>` on success, or the appropriate error.
 
 ## Failure policy
 
 - Missing env var: exit non-zero immediately, no partial work.
-- Fireflies transcript not ready: skip this meeting, keep KV entry, do not log as failure.
-- GitHub or Resend failure: log error, keep KV entry, continue with the next meeting.
-- Trilium failure: log warning, continue and still mark done (Trilium is best-effort secondary storage).
-- Network timeouts: do not retry within a tick. The next cron tick is the retry mechanism.
+- Fireflies transcript not ready: retry up to 3 times (20s apart). If still unavailable, log and exit 0. Re-deliver the webhook from the Fireflies dashboard to retry.
+- GitHub or Resend failure: log error and exit non-zero. Re-deliver the webhook from Fireflies to retry.
+- Trilium failure: log warning, continue to email. Trilium is best-effort secondary storage.
 
 ## Idempotency
 
-The same meeting can appear in the queue more than once if the Worker retried. The routine must produce the same end state regardless: GitHub PUT carries a `sha` for updates, Trilium uses a deterministic `noteId`, Resend will send a duplicate email (acceptable; it is rate-limited by the queue dedupe at the Worker level via 24h KV TTL).
+Fireflies may re-deliver the webhook, causing duplicate invocations. The routine produces the same end state regardless: GitHub PUT carries a `sha` for updates, Trilium uses a deterministic `noteId` (`fireflies-<meetingId>`), and a duplicate email send is acceptable.
 
 ## Out of scope
 
-- Webhook signature verification (handled by the Worker).
+- Webhook signature verification (handled by the proxy Worker).
 - Multi-recipient CC.
 - PDF generation.
 - Slack/Teams delivery.

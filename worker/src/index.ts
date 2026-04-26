@@ -1,128 +1,71 @@
 export interface Env {
-  QUEUE: KVNamespace;
   FIREFLIES_WEBHOOK_SECRET: string;
-  WORKER_ADMIN_TOKEN: string;
+  ANTHROPIC_ROUTINE_URL: string;
+  ANTHROPIC_ROUTINE_TOKEN: string;
 }
-
-const KV_PREFIX = "pending:";
-const KV_TTL_SECONDS = 86400;
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
-    const url = new URL(req.url);
+    if (req.method !== "POST" || new URL(req.url).pathname !== "/") {
+      return new Response("not found", { status: 404 });
+    }
 
-    if (req.method === "POST" && url.pathname === "/") {
-      return handleWebhook(req, env);
+    const body = await req.text();
+
+    // Verify Fireflies HMAC signature
+    const signature =
+      req.headers.get("x-hub-signature") ??
+      req.headers.get("x-hub-signature-256") ??
+      req.headers.get("x-fireflies-signature");
+
+    if (!signature) {
+      return new Response("missing signature", { status: 401 });
     }
-    if (req.method === "GET" && url.pathname === "/queue") {
-      return handleListQueue(req, env);
+    if (!(await verifyHmac(body, signature, env.FIREFLIES_WEBHOOK_SECRET))) {
+      return new Response("invalid signature", { status: 401 });
     }
-    if (req.method === "DELETE" && url.pathname.startsWith("/queue/")) {
-      const id = decodeURIComponent(url.pathname.slice("/queue/".length));
-      return handleDeleteQueue(id, req, env);
+
+    // Extract meetingId from the Fireflies payload
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(body);
+    } catch {
+      return new Response("invalid json", { status: 400 });
     }
-    return new Response("not found", { status: 404 });
+
+    const meetingId = pickMeetingId(payload);
+    if (!meetingId) {
+      return new Response("missing meetingId", { status: 400 });
+    }
+
+    // Forward to Claude Code Remote Trigger
+    const triggerResp = await fetch(env.ANTHROPIC_ROUTINE_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.ANTHROPIC_ROUTINE_TOKEN}`,
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": "experimental-cc-routine-2026-04-01",
+      },
+      body: JSON.stringify({ text: meetingId }),
+    });
+
+    if (!triggerResp.ok) {
+      const err = await triggerResp.text();
+      console.error(`trigger failed (${triggerResp.status}): ${err}`);
+      return new Response("trigger failed", { status: 502 });
+    }
+
+    return new Response("triggered", { status: 200 });
   },
 };
 
-async function handleWebhook(req: Request, env: Env): Promise<Response> {
-  const body = await req.text();
-  const signature =
-    req.headers.get("x-hub-signature") ??
-    req.headers.get("x-hub-signature-256") ??
-    req.headers.get("x-fireflies-signature");
-
-  if (!signature) {
-    return new Response("missing signature", { status: 401 });
-  }
-  const valid = await verifyHmac(body, signature, env.FIREFLIES_WEBHOOK_SECRET);
-  if (!valid) {
-    return new Response("invalid signature", { status: 401 });
-  }
-
-  let payload: Record<string, unknown>;
-  try {
-    payload = JSON.parse(body);
-  } catch {
-    return new Response("invalid json", { status: 400 });
-  }
-
-  const meetingId = pickMeetingId(payload);
-  if (!meetingId) {
-    return new Response("missing meetingId", { status: 400 });
-  }
-
-  const entry = JSON.stringify({
-    receivedAt: new Date().toISOString(),
-    raw: payload,
-  });
-  await env.QUEUE.put(KV_PREFIX + meetingId, entry, {
-    expirationTtl: KV_TTL_SECONDS,
-  });
-
-  return new Response("queued", { status: 200 });
-}
-
-async function handleListQueue(req: Request, env: Env): Promise<Response> {
-  if (!authorized(req, env)) return unauthorized();
-
-  const list = await env.QUEUE.list({ prefix: KV_PREFIX });
-  const pending = await Promise.all(
-    list.keys.map(async (k) => {
-      const value = await env.QUEUE.get(k.name);
-      const meta = value ? (JSON.parse(value) as { receivedAt?: string }) : {};
-      return {
-        id: k.name.slice(KV_PREFIX.length),
-        receivedAt: meta.receivedAt ?? null,
-      };
-    })
-  );
-  return Response.json({ pending });
-}
-
-async function handleDeleteQueue(
-  id: string,
-  req: Request,
-  env: Env
-): Promise<Response> {
-  if (!authorized(req, env)) return unauthorized();
-  if (!id) return new Response("missing id", { status: 400 });
-  await env.QUEUE.delete(KV_PREFIX + id);
-  return new Response("deleted", { status: 200 });
-}
-
 function pickMeetingId(payload: Record<string, unknown>): string | null {
-  const candidates = [
-    "meetingId",
-    "meeting_id",
-    "transcriptId",
-    "transcript_id",
-    "id",
-  ];
-  for (const key of candidates) {
+  for (const key of ["meetingId", "meeting_id", "transcriptId", "transcript_id", "id"]) {
     const v = payload[key];
     if (typeof v === "string" && v.length > 0) return v;
   }
   return null;
-}
-
-function authorized(req: Request, env: Env): boolean {
-  const auth = req.headers.get("authorization");
-  if (!auth) return false;
-  return timingSafeEqual(auth, `Bearer ${env.WORKER_ADMIN_TOKEN}`);
-}
-
-function unauthorized(): Response {
-  return new Response("unauthorized", { status: 401 });
-}
-
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) {
-    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return diff === 0;
 }
 
 async function verifyHmac(
@@ -143,12 +86,13 @@ async function verifyHmac(
     key,
     new TextEncoder().encode(body)
   );
-  const computed = bufferToHex(sig);
-  return timingSafeEqual(provided.toLowerCase(), computed.toLowerCase());
-}
-
-function bufferToHex(buffer: ArrayBuffer): string {
-  return [...new Uint8Array(buffer)]
+  const computed = [...new Uint8Array(sig)]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+  if (provided.length !== computed.length) return false;
+  let diff = 0;
+  for (let i = 0; i < provided.length; i++) {
+    diff |= provided.charCodeAt(i) ^ computed.charCodeAt(i);
+  }
+  return diff === 0;
 }
