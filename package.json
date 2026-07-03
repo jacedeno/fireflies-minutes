@@ -1,0 +1,11 @@
+{
+  "name": "fireflies-minutes-routine",
+  "version": "1.0.0",
+  "description": "Scheduled routine for processing Fireflies meeting transcripts",
+  "type": "module",
+  "main": "routine.js",
+  "scripts": {
+    "routine": "node routine.js"
+  },
+  "dependencies": {}
+}
